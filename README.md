@@ -5,5 +5,5 @@ This repository contains the materials for the course
 
 You can create your own copy of the repository using the **Fork** button (top right).
 
-For questions/communication, use the (slack channel)[https://ethepigen2022.slack.com/]
+For questions/communication, use the [slack workspace](https://ethepigen2022.slack.com/)
 
