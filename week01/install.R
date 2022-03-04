@@ -1,4 +1,4 @@
-install.packages(c("gsl","ggplot2"))
+install.packages(c("gsl","ggplot2","remotes"))
 # If you haven't install Bioconductor yet:
 # install.packages("BiocManager")
 # BiocManager::install()
