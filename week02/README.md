@@ -10,7 +10,7 @@ The assignment for this week:
 2. Using the mouse EnsDb object, find the following:
  - How many different ensembl gene IDs and gene symbols are there for protein-coding genes?
  - Plot the distribution (histogram) of how many exons protein-coding genes
- - Plot the distribution of the (spliced) length of protein-coding genes
+ - Plot the distribution of the (spliced) length of protein-coding transcripts
 
 Name your markdown file `assignment.Rmd`, put it (along with the produced html) 
 in the `week02` folder of your repository, and push!
