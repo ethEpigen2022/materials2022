@@ -1,0 +1,128 @@
+---
+title: "week05"
+author: "Pierre-Luc"
+date: "3/23/2022"
+output: html_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(AnnotationHub)
+  library(ensembldb)
+  library(GenomicRanges)
+  library(epiwraps)
+  library(rtracklayer)
+  library(ggplot2)
+})
+ah <- AnnotationHub(localHub=TRUE)
+ensdb <- ah[["AH89211"]]
+```
+
+## Downloading the data
+
+Downloading peaks and signals for in Bruce mESC
+
+```{r, eval=FALSE}
+dir.create("peaks")
+dir.create("tracks")
+options(timeout=1800)
+
+# p300
+download.file("https://www.encodeproject.org/files/ENCFF460EOA/@@download/ENCFF460EOA.bed.gz", "peaks/p300.bed.gz")
+download.file("https://www.encodeproject.org/files/ENCFF146SCZ/@@download/ENCFF146SCZ.bigWig", "tracks/p300.bw")
+
+# H3K27ac
+download.file("https://www.encodeproject.org/files/ENCFF274UIB/@@download/ENCFF274UIB.bed.gz", "peaks/H3K27ac.bed.gz")
+download.file("https://www.encodeproject.org/files/ENCFF121THA/@@download/ENCFF121THA.bigWig", "tracks/H3K27ac.bw")
+
+# H3K27me3
+download.file("https://www.encodeproject.org/files/ENCFF008XKX/@@download/ENCFF008XKX.bed.gz", "peaks/H3K27me3.bed.gz")
+download.file("https://www.encodeproject.org/files/ENCFF160FEV/@@download/ENCFF160FEV.bigWig", "tracks/H3K27me3.bw")
+
+# H3K4me1
+download.file("https://www.encodeproject.org/files/ENCFF333IJH/@@download/ENCFF333IJH.bed.gz", "peaks/H3K4me1.bed.gz")
+download.file("https://www.encodeproject.org/files/ENCFF016YZA/@@download/ENCFF016YZA.bigWig", "tracks/H3K4me1.bw")
+
+# H3K4me3
+download.file("https://www.encodeproject.org/files/ENCFF247GVM/@@download/ENCFF247GVM.bed.gz", "peaks/H3K4me3.bed.gz")
+download.file("https://www.encodeproject.org/files/ENCFF611GSQ/@@download/ENCFF611GSQ.bigWig", "tracks/H3K4me3.bw")
+```
+
+
+## Reading in the data
+
+```{r}
+p300 <- import("peaks/p300.bed.gz", format="NarrowPeak")
+k4me1 <- import("peaks/H3K4me1.bed.gz", format="NarrowPeak")
+k4me3 <- import("peaks/H3K4me3.bed.gz", format="NarrowPeak")
+k27ac <- import("peaks/H3K27ac.bed.gz", format="NarrowPeak")
+k27me3 <- import("peaks/H3K27me3.bed.gz", format="NarrowPeak")
+```
+
+
+## Visualizing the p300 peaks
+
+```{r}
+sum(overlapsAny(p300, k4me1, ))
+sum(overlapsAny(p300, k27me3))
+
+
+head(p300)
+p300_chr1 <- p300[seqnames(p300)=="chr1"]
+length(p300_chr1)
+m <- signal2Matrix("tracks/p300.bw", regions = p300_chr1)
+plotEnrichedHeatmaps(m)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+## Overlaps
+
+```{r}
+listOfRegions <- list(p300=p300, k4me1=k4me1, k4me3=k4me3, k27ac=k27ac, k27me3=k27me3)
+
+regionOverlaps(listOfRegions)
+
+regionUpset(listOfRegions)
+```
+
+### Restricting to p300 sites
+
+```{r}
+regionUpset(listOfRegions, reference = p300)
+```
+
+Plotting:
+
+```{r}
+bam2bw()
+
+
+# to make this faster, I'm going to limit myself to chr1:
+p300_chr1 <- p300[seqnames(p300)=="chr1"]
+
+tracks <- list.files("tracks", full=TRUE)
+names(tracks) <- gsub("\\.bw","",basename(tracks))
+
+plotSignalTracks(tracks, p300_chr1[1], extend=2000, 
+                 colors=c("blue","red","gray","darkgreen","black"))
+
+ml <- signal2Matrix(tracks, regions=p300_chr1, extend=5000, w=100)
+plotEnrichedHeatmaps(ml, trim=0.9)
+plotEnrichedHeatmaps(ml, trim=c(0.15,0.9), scale_rows="global")
+```
+
+```{r}
+d <- meltSignals(ml)
+ggplot(d, aes(position, mean, colour=sample)) + geom_line()
+```
+

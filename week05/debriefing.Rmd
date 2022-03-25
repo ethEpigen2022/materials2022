@@ -1,0 +1,65 @@
+---
+title: "seqlevels and concordance"
+author: "Pierre-Luc Germain"
+date: "3/24/2022"
+output: html_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(epiwraps)
+})
+```
+
+
+```{bash}
+# example of the special parameters we'd use to call peaks on broad histone marks
+macs2 callpeak --broad --nolambda --nomodel
+```
+
+
+
+
+```{r}
+peaks_encode <- rtracklayer::import("../peaks/p300.bed.gz", format="NarrowPeak")
+peaks_R <- rtracklayer::import("peaks.bed")
+peaks_macs <- rtracklayer::import("Myc_peaks.narrowPeak")
+
+peakSets <- list(encode=peaks_encode, R=peaks_R, macs=peaks_macs)
+peakSets <- lapply(peakSets, FUN=function(x){ seqlevelsStyle(x) <- "Ensembl"; x })
+
+seqlevelsStyle(peaks_encode) <- "Ensembl"
+
+sum(overlapsAny(peaks_encode, peaks_R))
+
+head(peaks_R)
+head(peaks_macs)
+strong_peaks <- peaks_macs[peaks_macs$qValue>median(peaks_macs$qValue)]
+strong_peaks <- peaks_R[which(peaks_R$score>median(peaks_macs$score))]
+head(peaks_macs)
+```
+
+
+
+
+
+```{r}
+length(peaks_R)
+length(peaks_macs)
+length(peaks_encode)
+
+sum(overlapsAny(peaks_macs, peaks_R))/length(peaks_macs)
+
+regionCAT(peaks_encode, peaks_R)
+
+peaks_not_in_MACS <- peaks_R[!overlapsAny(peaks_R, peaks_macs)]
+head(peaks_not_in_MACS)
+
+seqlevelsStyle(peaks_not_in_MACS) <- "UCSC"
+seqlevelsStyle(peaks_macs) <- "UCSC"
+seqlevelsStyle(peaks_R) <- "UCSC"
+
+plotSignalTracks(list(p300="../../w5/tracks/p300.bw", macs=peaks_macs, R=peaks_R), region = peaks_not_in_MACS[1])
+```
+
