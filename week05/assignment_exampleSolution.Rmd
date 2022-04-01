@@ -1,0 +1,92 @@
+---
+title: "Week 5 assignment -- example solution"
+author: "Pierre-Luc"
+date: "4/1/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE) 
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(epiwraps)
+})
+```
+
+# Getting the data
+
+## Download 
+
+```{r, eval=FALSE}
+dir.create("peaks")
+dir.create("tracks")
+options(timeout=1800)
+
+# mESC
+download.file("https://www.encodeproject.org/files/ENCFF008XKX/@@download/ENCFF008XKX.bed.gz", "peaks/H3K27me3_mESC.bed.gz")
+download.file("https://www.encodeproject.org/files/ENCFF160FEV/@@download/ENCFF160FEV.bigWig", "tracks/H3K27me3_mESC.bw")
+
+download.file("https://www.encodeproject.org/files/ENCFF247GVM/@@download/ENCFF247GVM.bed.gz", "peaks/H3K4me3_mESC.bed.gz")
+download.file("https://www.encodeproject.org/files/ENCFF611GSQ/@@download/ENCFF611GSQ.bigWig", "tracks/H3K4me3_mESC.bw")
+
+# myocytes
+download.file("https://www.encodeproject.org/files/ENCFF044YOI/@@download/ENCFF044YOI.bed.gz", "peaks/H3K27me3_myocyte.bed.gz")
+download.file("https://www.encodeproject.org/files/ENCFF045JOU/@@download/ENCFF045JOU.bigWig", "tracks/H3K27me3_myocyte.bw")
+
+download.file("https://www.encodeproject.org/files/ENCFF944EDY/@@download/ENCFF944EDY.bed.gz", "peaks/H3K4me3_myocyte.bed.gz")
+download.file("https://www.encodeproject.org/files/ENCFF503YQC/@@download/ENCFF503YQC.bigWig", "tracks/H3K4me3_myocyte.bw")
+```
+
+## Reading the peaks into R
+
+```{r}
+peakfiles <- list.files("peaks/", full=TRUE)
+names(peakfiles) <- gsub(".bed.gz", "", basename(peakfiles), fixed=TRUE)
+sets <- lapply(peakfiles, FUN=function(x) rtracklayer::import(x, format="narrowPeak"))
+```
+
+# Identifying bivalent domains
+
+```{r}
+# method one: find the H3K4me3 peaks that overlap a H3K27me3 domain:
+biv1 <- sets$H3K4me3_mESC[overlapsAny(sets$H3K4me3_mESC, sets$H3K27me3_mESC)]
+# method two: fine the regions that are covered by both H3K4me3 and H3K27me3
+biv2 <-intersect(sets$H3K4me3_mESC, sets$H3K27me3_mESC)
+
+table(overlapsAny(biv1, biv2))
+table(overlapsAny(biv2, biv1))
+```
+
+The number and sizes of the regions are different, but all regions of one set overlap some regions of the other.
+
+# Answering the questions
+
+How many of the mESC bivalent domains have either mark or their combination in myocytes?
+
+```{r}
+isK27 <- overlapsAny(biv2, sets$H3K27me3_myocyte) & !overlapsAny(biv2, sets$H3K4me3_myocyte)
+table(isK27)
+
+isK4 <- overlapsAny(biv2, sets$H3K4me3_myocyte) & !overlapsAny(biv2, sets$H3K27me3_myocyte)
+isBiv <- overlapsAny(biv2, sets$H3K4me3_myocyte) & overlapsAny(biv2, sets$H3K27me3_myocyte)
+```
+
+Of the `r length(isK27)` mESC bivalent domains, `r sum(isK27)` are repressed (H3K27me3 without H3K4me3) in myocytes.
+Of the `r length(isK4)` mESC bivalent domains, `r sum(isK4)` are activated (H3K4me3 without H3K27me3) in myocytes.
+Of the `r length(isBiv)` mESC bivalent domains, `r sum(isBiv)` remain bivalent in myocytes.
+
+
+Or we could use the upset plot:
+
+```{r}
+sets2 <- list(bivalent_mESC=biv2, H3K4me3_myocyte=sets$H3K4me3_myocyte,
+              H3K27me3_myocyte=sets$H3K27me3_myocyte)
+regionUpset(sets2)
+regionUpset(sets2, reference = biv2)
+```
+
+What we can observe is that the vast majority of mESC bivalent domains (4058 out of 4294) become either repressed or activated upon differentiation (with more becoming repressed).
+
