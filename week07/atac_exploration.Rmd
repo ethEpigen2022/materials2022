@@ -1,0 +1,139 @@
+---
+title: "ATAC-seq exploration practical"
+author: "Pierre-Luc"
+date: "4/6/2022"
+output: html_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(epiwraps)
+  library(AnnotationHub)
+  library(MotifDb)
+  library(memes)
+  library(universalmotif)
+  library(ensembldb)
+  library(ggplot2)
+})
+
+ah <- AnnotationHub(localHub=TRUE)
+ensdb <- ah[["AH89211"]]
+```
+
+
+## Download the data
+
+```{r, eval=FALSE}
+download.file("https://ethz-ins.org/content/w7/atac.chr19.bam", "atac.chr19.bam")
+download.file("https://ethz-ins.org/content/w7/atac.chr19.bam.bai", "atac.chr19.bam.bai")
+
+# if you're on a slow computer, you might also want to download the tracks that we're generating below:
+tracks <- c("full_cuts.bw", "NF_cov.bw", "NF_cuts.bw", "mono_cov.bw", "mono_cuts.bw")
+for(f in tracks){
+  download.file(paste0("https://ethz-ins.org/content/w7/",f), f)
+}
+```
+
+
+## Preparing tracks
+
+```{r}
+bam <- "atac.chr19.bam"
+
+# create a track using all fragments, computing the coverage at each position (and force Ensembl naming)
+bam2bw(bam, output_bw = "full_cov.bw", paired=TRUE, binWidth=1L, forceSeqlevelsStyle = "Ensembl")
+
+# create a track using all fragments, but computing the number of cuts/insertion sites at each position
+bam2bw(bam, output_bw = "full_cuts.bw", paired=TRUE, binWidth=1L, type="ends", forceSeqlevelsStyle = "Ensembl")
+
+# create a track using only nucleosome-free fragments, computing coverage
+bam2bw(bam, output_bw = "NF_cov.bw", paired=TRUE, binWidth=1L, minFragLength=30, 
+       maxFragLength=115, forceSeqlevelsStyle = "Ensembl")
+# create a track using only nucleosome-free fragments, computing cuts
+bam2bw(bam, output_bw = "NF_cuts.bw", paired=TRUE, binWidth=1L, minFragLength=30,
+       maxFragLength=115, type="ends", forceSeqlevelsStyle = "Ensembl")
+
+# create a track using only mono-nucleosome fragments, computing coverage
+bam2bw(bam, output_bw = "mono_cov.bw", paired=TRUE, binWidth=1L, minFragLength=130,
+       maxFragLength=220, forceSeqlevelsStyle = "Ensembl")
+# create a track using only mono-nucleosome fragments, computing cuts
+bam2bw(bam, output_bw = "mono_cuts.bw", paired=TRUE, binWidth=1L, minFragLength=130,
+       maxFragLength=220, type="ends", forceSeqlevelsStyle = "Ensembl")
+```
+
+
+## Obtaining the sites with a CTCF motif
+
+```{r}
+# get CTCF sites
+motif <- query(MotifDb, c("CTCF","Mus"))[[1]]
+genome <- ah[["AH68356"]]
+# get the sequence for chr19:
+chr19 <- GRanges("19", IRanges(1L,seqlengths(genome)["19"]))
+chr19 <- setNames(getSeq(genome, chr19), "19")
+# an alternative way would have been just import(genome)["19"]
+
+# find motifs
+moi <- runFimo(chr19, convert_motifs(motif))
+# keep only motifs with a high score
+moi2 <- moi[moi$score>15]
+```
+
+## Plotting signal around the motif occurences
+
+```{r}
+# we prepare the list of tracks
+tracks <- c("Full cuts"="full_cuts.bw", "NF coverage"="NF_cov.bw", "NF cuts"="NF_cuts.bw",
+            "Mono cov"="mono_cov.bw", "Mono cuts"="mono_cuts.bw")
+
+# extract signals around the motif occurences
+# we zoom in to 500bp around the motif centers, in windows of 5bp
+sm <- signal2Matrix(tracks, moi2, w=5, extend=500)
+# plot the signals:
+plotEnrichedHeatmaps(sm, trim=0.95)
+
+# we renormalize using border backgrounds
+# (we'll see more developed normalization methods next session)
+smb <- renormalizeBorders(sm)
+plotEnrichedHeatmaps(sm2b, trim=0.95)
+```
+
+
+## Plotting footprint
+
+We could use our standard functions:
+
+```{r}
+d <- meltSignals(smb)
+ggplot(d, aes(position, mean, colour=sample)) + geom_line(size=1.2)
+```
+Or we could use a specialized function from the ATACseqQC package:
+
+```{r}
+# a wrapper around the ATACseqQC function for plotting motif footprints
+motifFootprint <- function(bamfile, motif, motif_occurences, genome, around=100){
+  seqlengths(motif_occurences) <- seqlengths(genome)[seqlevels(motif_occurences)]
+  seqlevelsStyle(motif_occurences) <- "UCSC"
+  ATACseqQC::factorFootprints(bamfile, pfm=motif, bindingSites=motif_occurences, 
+                              upstream=around, downstream=around,
+                              seqlev=seqlevels(motif_occurences))
+}
+
+motifFootprint("atac.chr19.bam", motif, moi2, genome)
+```
+
+## Signal around TSS
+
+We could also look at the pattern around the TSS
+
+```{r}
+# fetch the protein-coding TSS from chromosome 19
+txs <- transcripts(ensdb, filter=TxBiotypeFilter("protein_coding"))
+txs <- txs[seqnames(txs)=="19"]
+tss <- promoters(txs, upstream=0, downstream=1)
+
+tss.sm <- signal2Matrix(tracks, tss, w=5, extend=500)
+tss.smb <- renormalizeBorders(tss.sm)
+plotEnrichedHeatmaps(tss.sm, trim=0.95)
+```
+
