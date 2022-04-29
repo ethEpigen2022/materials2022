@@ -1,0 +1,273 @@
+---
+title: "Normalization and differential analysis"
+author: "Pierre-Luc"
+date: "4/28/2022"
+output: html_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(epiwraps)
+  library(GenomicRanges)
+  library(SummarizedExperiment) # structure to contain data+annotation
+  library(sechm) # for plotting heatmaps from SummarizedExperiment objects
+  library(edgeR) # count-based differential analysis
+  library(Rsubread) # for counting reads
+  library(ggplot2) # for plotting
+  library(patchwork) # for arranging plots together
+})
+```
+
+## Preliminary notes
+
+Here we'll work with only a subset of the data from the GDVS paper, namely the ChIPseq from 4 mutant lines and 3 controls.
+
+```{r, eval=FALSE}
+download.file("https://ethz-ins.org/content/yy1.zip", "yy1.zip")
+unzip("yy1.zip")
+```
+
+
+The make the data lighter for the practical, the bam files have been trimmed to contain only reads around peaks, and the tracks have been generated only for chromosome 1.
+
+
+## Getting consensus peaks
+
+```{r}
+# create a vector with all the peak files in it, and giving it clean names:
+peakfiles <- list.files("peaks", full=TRUE)
+names(peakfiles) <- gsub("_peaks\\.narrowPeak","",basename(peakfiles))
+peakfiles
+
+# import each file, and look at the overlaps between peaks
+peaks <- lapply(peakfiles, FUN=rtracklayer::import)
+regionOverlaps(peaks)
+regionUpset(peaks)
+```
+
+For downstream analysis, we'll want to have a single set of regions that contains all the relevant regions.
+Regions that occur only in one sample are not really important, so we could filter them out, and then merge the regions.
+
+```{r}
+merged_peaks <- reduce(unlist(GRangesList(peaks)), with.revmap=TRUE)
+merged_peaks <- granges(merged_peaks[lengths(merged_peaks$revmap)>1]) # we could change the >1 here to require a higher minimum number of samples
+merged_peaks
+```
+
+But for this analysis we'll use pre-computed ones:
+
+```{r}
+merged_peaks <- rtracklayer::import("peaks.bed")
+# those merged peaks are filtered for blacklisted regions and contain low-FDR peaks
+```
+
+
+## Looking at the peaks
+
+Let's have a look at the peaks in one CTRL ChIP and in the input, just in chr1:
+
+```{r, fig.height=4, fig.width=5}
+peaks_chr1 <- merged_peaks[seqnames(merged_peaks)=="1"]
+dat <- signal2Matrix(list(CTRL1="chr1_tracks/CTRL1.bw", input="chr1_tracks/input.bw"), peaks_chr1)
+plotEnrichedHeatmaps(dat)
+```
+
+## Counting the number of reads in each peak, in each sample
+
+```{r}
+# create a vector with all the peak files in it, and giving it clean names:
+bamfiles <- list.files("aligned", pattern="bam$", full=TRUE)
+# we give the samples clean names:
+names(bamfiles) <- gsub("\\.bam","",basename(bamfiles))
+
+# for counting, we need to convert our GRanges object to a data.frame with the following specifications:
+anno <- cbind(name=as.character(merged_peaks), as.data.frame(merged_peaks))
+anno$width <- NULL
+colnames(anno) <- c("GeneID", "Chr", "Start", "End", "Strand")
+
+fc <- featureCounts( files=bamfiles,    # the files in which we want to count reads
+                     isPairedEnd=FALSE,
+                     annot.ext=anno,    # the regions in which we want to count reads
+                     readExtension3=50, # extend the reads by 50bp
+                     nthreads=3         # multithreading (to speed up)
+                    )
+```
+
+We're going to package this data into a SummarizedExperiment (SE) object:
+
+```{r}
+se <- SummarizedExperiment(assays=list(counts=fc$counts), rowRanges=merged_peaks )
+se
+# we keep the counts in the input, but not as a normal sample:
+rowData(se)$input.count <- assay(se)[,"input.bam"]
+se <- se[,colnames(se)!="input.bam"]
+# we assign the conditions:
+# se$condition  equivalent to  colData(se)$condition
+se$condition <- c("CTRL","MUT")[1+grepl("MUT",colnames(se))]
+# is equivalent to:
+# se$condition <- c("CTRL","CTRL","CTRL","MUT","MUT","MUT","MUT")
+se
+```
+
+## Normalization
+
+Let's have a look at the counts:
+
+```{r}
+head(assay(se))
+head(assays(se)$counts)
+```
+Let's plot the counts for the first 500 regions:
+
+```{r}
+sechm(se, head(row.names(se),500), assayName="counts", do.scale=TRUE, top_annotation = c("condition"))
+```
+
+Or another way to look at it:
+
+```{r}
+plot(assay(se)[,1], assay(se)[,2], log="xy")
+abline(a=0, b=1)
+```
+
+The usual way we represent this kind of relation is through a M-A plot:
+
+```{r}
+edgeR::maPlot(assay(se)[,1], assay(se)[,2], lowess=TRUE, ylab="M (log2 foldchange)", 
+              xlab="A (mean log-count)"); abline(h=0, lty="dashed")
+```
+
+
+Since these are two controls, it's very likely that the observed difference is simply due to technical reason, like the depth of sequencing.
+We therefore need to normalize -- but how are we going to do it?
+
+The standard approach would be to use the TMM normalization:
+
+```{r}
+dds <- DGEList(assay(se), group=se$condition)
+dds <- calcNormFactors(dds)
+assays(se)$tmm.logcpm <- log1p(cpm(dds))
+
+sechm(se, head(row.names(se),500), assayName="tmm.logcpm", do.scale = TRUE)
+```
+
+This made the 3 controls very consistent with each other, suggesting that the normalization worked.
+
+From this, it looks like some regions have increased YY1 occupancy in the mutant, while others have decreased occupancy, and very little remains unaltered.
+We can also run the differential analysis and look at the results :
+
+```{r}
+dds <- estimateDisp(dds)
+et <- as.data.frame(topTags(exactTest(dds),n=Inf))
+head(et)
+```
+
+We can represent the results of the analysis as a so-called 'volcano plot':
+
+```{r}
+ggplot(et, aes(logFC, -log10(FDR))) + geom_point() + 
+  geom_hline(yintercept=-log10(0.05), linetype="dashed")
+```
+
+(You can use the `EnhancedVolcano` package to make nicer-looking plots)
+
+At a first glance, there seems to be roughly as many regions that increase in binding as regions that decrease in binding.
+Does this sound likely to you?
+
+Let's look again at an MA plot between a ctrl and a mutant:
+
+```{r}
+edgeR::maPlot(assay(se)[,3], assay(se)[,6], lowess=TRUE); abline(h=0, lty="dashed")
+```
+
+
+## Normalization based on top peaks
+
+```{r}
+# we first calculate the peaks' median enrichment against the input
+rowData(se)$medianEnr <- matrixStats::rowMedians(assays(se)$tmm.logcpm - log1p(rowData(se)$input.count))
+# we then select the top peaks based on that
+w <- head(order(rowData(se)$medianEnr, decreasing=TRUE), 200)
+# we then estimate TMM normalization factors based on that:
+dds2 <- calcNormFactors(dds[w,,keep.lib.sizes=TRUE])
+dds2$samples
+```
+
+Notice that the `norm.factors` column is different than the one we previous had. We can now inject them into the full object:
+
+```{r}
+dds$samples$norm.factors <- dds2$samples$norm.factors
+```
+
+We compute again the normalized logcpm and plot our matrix:
+
+```{r}
+assays(se)$logcpm <- log1p(cpm(dds))
+sechm(se, head(row.names(se),500), assayName="logcpm", do.scale = TRUE)
+```
+
+We can now do the differential analysis using these factors
+
+```{r}
+dds <- estimateDisp(dds)
+et <- as.data.frame(topTags(exactTest(dds),Inf))
+head(et)
+ggplot(et, aes(logFC, -log10(FDR))) + geom_point() + 
+  geom_hline(yintercept=-log10(0.05), linetype="dashed")
+```
+
+
+(See `?edgeRUsersGuide()` for how to apply edgeR to more complex experimental designs)
+
+
+We could also visualize the top results in this way:
+
+```{r}
+sechm(se, head(row.names(et),50), assayName="logcpm", do.scale=TRUE, row_title="Top 50 differentially-bound regions")
+```
+
+
+## Applying the normalization for visualization
+
+For comparison, we first plot using background normalization:
+
+```{r, fig.width=8, fig.height=4}
+tracks <- list.files("chr1_tracks", full=TRUE)
+tracks <- tracks[grep("input",tracks,invert=TRUE)]
+m <- signal2Matrix(tracks, peaks_chr1)
+plotEnrichedHeatmaps(m)
+```
+
+We now apply the normalization factors we calculated:
+
+```{r, fig.width=8, fig.height=4}
+# we first make sure that the order of the samples matches:
+cbind(colnames(dds), names(m))
+m2 <- rescaleSignalMatrices(m, scaleFactors=1/dds$samples$norm.factors)
+plotEnrichedHeatmaps(m2)
+```
+
+Let's look at it using just the average signal plots:
+
+```{r, fig.width=9, fig.height=4}
+d1 <- meltSignals(m)
+d1$condition <- gsub("[0-9]","",d1$sample)
+p1 <- ggplot(d1, aes(position, mean, group=sample, colour=condition)) + geom_line() + ggtitle("Coverage normalization")
+d2 <- meltSignals(m2)
+d2$condition <- gsub("[0-9]","",d2$sample)
+p2 <- ggplot(d2, aes(position, mean, group=sample, colour=condition)) + geom_line() + ggtitle("Top peaks normalization")
+p1 | p2
+```
+
+## Using background normalization
+
+```{r}
+# here I have to specify the chromosomes to use because the bigwig files contain only those
+nf <- bwNormFactors(tracks, useSeqLevels = c("1","2"))
+m3 <- rescaleSignalMatrices(m, scaleFactors=1/nf)
+d3 <- meltSignals(m3)
+d3$condition <- gsub("[0-9]","",d3$sample)
+p3 <- ggplot(d3, aes(position, mean, group=sample, colour=condition)) + geom_line() + ggtitle("Background normalization")
+p2 | p3
+```
+
