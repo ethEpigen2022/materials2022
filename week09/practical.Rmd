@@ -1,0 +1,86 @@
+---
+title: "Clustering and enrichment analysis"
+author: "Pierre-Luc"
+output: html_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(epiwraps)
+  library(ggplot2)
+  library(rGREAT)
+})
+```
+
+
+## Download the data
+```{r, eval=FALSE}
+download.file("https://ethz-ins.org/content/w9.zip", "w9.zip")
+unzip("w9.zip")
+```
+
+## Prepare the regions and the tracks
+
+```{r}
+tracks <- list.files(pattern="bw$")
+regions <- rtracklayer::import("regions.bed")
+```
+
+## Plot
+
+```{r}
+ml <- signal2Matrix(tracks, regions, extend=1000, w=20)
+plotEnrichedHeatmaps(ml)
+```
+
+## Clustering
+
+```{r}
+cl <- clusterSignalMatrices(ml, k=4)
+table(cl)
+```
+Plotting the clusters:
+
+```{r}
+plotEnrichedHeatmaps(ml, row_split=cl)
+```
+
+Adding colors:
+
+```{r}
+mycolors <- c("1"="red", "2"="blue", "3"="darkgreen", "4"="black")
+plotEnrichedHeatmaps(ml, row_split=cl, mean_color=mycolors)
+```
+
+Plotting just the averages:
+
+```{r}
+d <- meltSignals(ml, splitBy=cl)
+ggplot(d, aes(position, mean, colour=sample)) + geom_line(size=1.2) + facet_wrap(~split)
+```
+
+
+## Enrichment analysis
+
+Find what's enriched in one cluster with respect to the others:
+
+```{r}
+# we first split the regions by cluster:
+split_regions <- split(regions, cl)
+
+# we send the data to the GREAT server to run an enrichment analysis
+job <- submitGreatJob(split_regions[[4]], regions, species="mm10")
+res <- getEnrichmentTables(job)
+names(res)
+```
+
+We plot the top Biological Processes:
+
+```{r, fig.width=9, fig.height=6}
+bp <- res$`GO Biological Process`
+head(bp)
+
+ggplot(head(bp,20), aes(Hyper_Fold_Enrichment, name, size=Hyper_Foreground_Region_Hits, color=-log10(Hyper_Adjp_BH))) + geom_point() + scale_color_viridis_c()
+```
+
