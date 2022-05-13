@@ -1,0 +1,183 @@
+---
+title: "DNA methylation and enrichment analysis"
+author: "Pierre-Luc / Emanuel"
+output: html_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(epiwraps)
+  library(ggplot2)
+  library(rGREAT)
+  library(AnnotationHub)
+  library(ensembldb)
+  library(bsseq)
+  library(BiocParallel)
+  library(edgeR)
+  library(DMRcate)
+})
+
+set.seed(40)
+```
+
+
+# Load the data
+
+## Load the Annotation data
+
+promoters
+```{r}
+ah <- AnnotationHub()
+ensdb <- ah[["AH89211"]] # GRCm38
+
+# For simplicity we assume here that the region +/- 150 of a tss constitutes a promoters
+tssMargin <- 200
+promoterRegions <- promoters(ensdb, upstream=tssMargin, downstream=tssMargin)
+promoterRegions <- promoterRegions[seqnames(promoterRegions)=="1"]
+
+# Change the seqlevel manually (bit of a quick fix, check: https://github.com/Bioconductor/GenomeInfoDb/issues/27)
+seqlevels(promoterRegions) <- seqlevelsInUse(promoterRegions)
+seqlevels(promoterRegions) <- c("1"="chr1")
+
+# subset for speed up
+promoterRegions <- promoterRegions[sample(1:length(promoterRegions), 500)]
+
+# to save time just read
+#promoterRegions <- readRDS("./data_practical/promoterRegions.rds")
+```
+
+gene bodies: 
+```{r}
+geneBodies <- genes(ensdb, columns=c("gene_seq_start", "gene_seq_end"))
+
+# here we look only at chromosome 1
+geneBodies <- geneBodies[seqnames(geneBodies)=="1"]
+seqlevels(geneBodies) <- seqlevelsInUse(geneBodies)
+seqlevels(geneBodies) <- c("1"="chr1")
+
+# remove regions 
+geneBodies <- geneBodies[sample(1:length(geneBodies), 500)]
+
+# to save time just read the proc file.
+#geneBodies <- readRDS("./data_practical/genebodies.rds")
+```
+
+
+## Load the DNA methylation data
+```{r}
+dnaM <- readRDS("./data_practical/DNAme.CpG.GR.rds")
+```
+
+## Load the chIP-seq/ATAC experiments
+```{r}
+tracksBw <- list.files("./data_practical",pattern="bw$", full.names=TRUE)
+```
+
+## Enriched Heatmaps
+
+### Gene body
+```{r}
+tracks <- list("ATAC"=tracksBw[1],
+               "H3K27ac"=tracksBw[3],
+               "H3K4me3"=tracksBw[4],
+               "DNAm"=dnaM)
+
+mlGb <- signal2Matrix(tracks[1:3], geneBodies, extend=1000, w=20, type="scale")
+mlMeGb <- signal2Matrix(tracks[4], geneBodies, extend=1000, w=20, type="scale")
+
+plotEnrichedHeatmaps(renormalizeBorders(mlGb), axis_name = c("TSS","TES")) + 
+plotEnrichedHeatmaps(mlMeGb, scale_title="Proportion\nmethylated", axis_name = c("TSS","TES"), colors = c("white","red"))
+```
+
+Smoothed
+```{r}
+mlMeGb <- signal2Matrix(tracks[4], geneBodies, extend=1000, w=20, type="scale", smooth=TRUE)
+
+plotEnrichedHeatmaps(renormalizeBorders(mlGb), axis_name = c("TSS","TES"))+ 
+plotEnrichedHeatmaps(mlMeGb, scale_title="Proportion\nmethylated", axis_name = c("TSS","TES"), colors = c("white","red"))
+```
+### Promoters
+```{r}
+mlTss <- signal2Matrix(tracks[1:3], promoterRegions, extend=1000, w=20, type="scale")
+mlMeTss <- signal2Matrix(tracks[4], promoterRegions, extend=1000, w=20, type="scale", smooth=TRUE)
+
+plotEnrichedHeatmaps(renormalizeBorders(mlTss), axis_name = c("TSS","TES"))+
+plotEnrichedHeatmaps(mlMeTss, scale_title="Proportion\nmethylated", axis_name=c("TSS","TES"), colors=c("white","red"))
+```
+
+Clustering
+```{r}
+cl <- clusterSignalMatrices(mlMeTss, k=2)
+table(cl)
+
+mycolors <- c("1"="red", "2"="blue", "3"="green") # row_split=cl, mean_color=mycolors
+plotEnrichedHeatmaps(renormalizeBorders(mlTss), axis_name = c("TSS","TES"), row_split=cl, mean_color=mycolors)+
+plotEnrichedHeatmaps(mlMeTss, scale_title="Proportion\nmethylated", axis_name = c("TSS","TES"), colors = c("white","red"), row_split=cl, mean_color=mycolors)
+```
+### TF-Bindings
+```{r}
+tracks <- list("ATAC"=tracksBw[1],
+               "H3K27ac"=tracksBw[3],
+               "H3K4me3"=tracksBw[4],
+               "CTCF"=tracksBw[2],
+               "DNAm"=dnaM)
+
+mlTss <- signal2Matrix(tracks[1:4], promoterRegions, extend=1000, w=20, type="center")
+mlMeTss <- signal2Matrix(tracks[5], promoterRegions, extend=1000, w=20, type="center", smooth=TRUE)
+
+plotEnrichedHeatmaps(renormalizeBorders(mlTss), axis_name = c("TSS","TES"))+
+plotEnrichedHeatmaps(mlMeTss, scale_title="Proportion\nmethylated", axis_name=c("TSS","TES"), colors=c("white","red"))
+```
+
+## Differential Methylation Testing
+
+
+### bsseq object
+```{r}
+bsseqEx <- readRDS("./data_practical/bsseqEx.rds")
+sampleNames(bsseqEx)
+
+metPromoters <- bsseq::getMeth(bsseqEx, regions=promoterRegions, type="raw", what="perRegion")
+
+# if we want the methylated fractions in form of a GRanges object
+promoterRegionsHbRep1 <- GRanges(seqnames=seqnames(promoterRegions),
+                                 ranges=ranges(promoterRegions),
+                                 strand=strand(promoterRegions),
+                                 score=metPromoters[,"hb_rep1"])
+promoterRegionsHbRep1
+```
+
+### smoothing
+Smoothing is done separately for each sample, only using the data where the coverage (for that sample) is non-zero. This estimates a genome-wide methylation profile, which is then evaluated in all CpGs in the BSseq object. As a result, after smoothing, every CpG in the object has an estimated methylation value. This is very nice for the situation where you want to compare a single CpG across multiple samples, but one or two of the samples have zero coverage by chance. But note that these smoothed methylation profiles makes less sense in the parts of the genome where there are no covered CpGs nearby. We fix this by removing these CpGs after smoothing, see below. (from the bsseq vignette)
+```{r, eval=FALSE}
+bsseqEx <- BSmooth(BSseq=bsseqEx, 
+                   BPPARAM=MulticoreParam(workers = 4), 
+                   verbose = TRUE)
+
+getMeth(bsseqEx, regions=promoterRegions, type="smooth", what="perRegion")
+```
+
+### Testing
+```{r}
+# annotate
+pData(bsseqEx) <- data.frame(replicate=c(1,2,1,2),
+                             tissue=c("hindbrain", "hindbrain", "neural_tube", "neural_tube"),
+                             row.names=colnames(bsseqEx))
+colnames(bsseqEx) <- rownames(pData(bsseqEx))
+sampleNames(bsseqEx) <- rownames(pData(bsseqEx))
+
+tissue <- factor(pData(bsseqEx)$tissue)
+design <- model.matrix(~tissue) # design matrix
+
+# adapt for methylation data
+methdesign <- modelMatrixMeth(design)
+
+seqAnnot <- sequencing.annotate(bsseqEx, methdesign, all.cov=TRUE, coef="tissueneural_tube", fdr=0.4)
+dmrcateRes <- dmrcate(seqAnnot, C=2, min.cpgs = 10, pcutoff=0.01)
+
+dmrRanges <- extractRanges(dmrcateRes, genome="mm10")
+saveRDS(dmrRanges, "./data_practical/dmr.rds")
+```
+
+
