@@ -1,0 +1,86 @@
+---
+title: "dmrTesting"
+author: "Emanuel Sonder"
+date: "13 5 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(plyr)
+library(edgeR)
+library(DMRcate)
+```
+
+## Download the data
+
+```{bash, eval=FALSE}
+wget -O ./data_exercises/E13_5_rep1.bed.gz https://www.encodeproject.org/files/ENCFF320IBB/@@download/ENCFF320IBB.bed.gz
+wget -O ./data_exercises/E13_5_rep2.bed.gz https://www.encodeproject.org/files/ENCFF673PJA/@@download/ENCFF673PJA.bed.gz
+
+wget -O ./data_exercises/liver_adult_rep1.bed.gz https://www.encodeproject.org/files/ENCFF290YYT/@@download/ENCFF290YYT.bed.gz
+wget -O ./data_exercises/liver_adult_rep2.bed.gz https://www.encodeproject.org/files/ENCFF036WBT/@@download/ENCFF036WBT.bed.gz
+```
+
+```{bash, eval=FALSE}
+gzip -d ./data_exercises/E13_5_rep1.bed.gz
+gzip -d ./data_exercises/E13_5_rep2.bed.gz
+
+gzip -d ./data_exercises/liver_adult_rep1.bed.gz
+gzip -d ./data_exercises/liver_adult_rep2.bed.gz
+```
+
+
+## Convert to bsseq object
+```{r}
+dir.create("./data_exercises")
+bedFiles <- list.files("./data_exercises",pattern="bed$", full.names=TRUE)
+bsseqOb <- lapply(bedFiles, function(file){
+  
+  # for the columns of Encode processed WGBS data see: 
+  # https://www.encodeproject.org/data-standards/wgbs-encode4/
+  dtHb <- fread(file,
+                col.names=c("chr", "start", "end", "strand", "cov", "perc_met"),
+                select=c(1,2,3,6,10,11))
+  
+  dtHb[,M:=round_any(cov*perc_met/100, accuracy=1.0)] # the percentage values are unfortunately rounded
+  
+  # subset on chromosome 1 & strand + only for speed-up
+  dtHb <- subset(dtHb, chr=="chr1" & strand=="+")
+  
+  BSseq(chr=as.matrix(dtHb$chr),
+        pos=dtHb$start,
+        M=as.matrix(dtHb$M),
+        Cov=as.matrix(dtHb$cov),
+        sampleNames=file)
+})
+
+bsseqOb <- combine(bsseqOb[[1]], bsseqOb[[2]], bsseqOb[[3]], bsseqOb[[4]])
+sampleNames(bsseqOb) <- unlist(tstrsplit(bedFiles, split="/", keep=3))
+
+saveRDS(bsseqOb, "bsseqOb.rds")
+```
+
+```{r}
+pData(bsseqOb) <- data.frame(replicate=c(1,2,1,2),
+                             tissue=c("forbrain", "forbrain", "liver", "liver"),
+                             row.names=colnames(bsseqOb))
+
+colnames(bsseqOb) <- rownames(pData(bsseqOb))
+sampleNames(bsseqOb) <- rownames(pData(bsseqOb))
+
+tissue <- factor(pData(bsseqOb)$tissue)
+design <- model.matrix(~tissue) # design matrix
+
+# adapt for methylation data
+methdesign <- modelMatrixMeth(design)
+
+seqAnnot <- sequencing.annotate(bsseqOb, methdesign, all.cov=TRUE, coef="tissueliver", fdr=0.05)
+dmrcateRes <- dmrcate(seqAnnot, C=2, min.cpgs = 10, pcutoff=0.01)
+
+dmrRanges <- extractRanges(dmrcateRes, genome="mm10")
+
+idx <- order(dmrRanges$min_smoothed_fdr)[1:400]
+dmrRanges <- dmrRanges[idx]
+saveRDS(dmrRanges, "dmr.rds")
+```
