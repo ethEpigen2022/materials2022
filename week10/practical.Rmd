@@ -178,6 +178,18 @@ dmrcateRes <- dmrcate(seqAnnot, C=2, min.cpgs = 10, pcutoff=0.01)
 
 dmrRanges <- extractRanges(dmrcateRes, genome="mm10")
 saveRDS(dmrRanges, "./data_practical/dmr.rds")
+
+DMR.plot(dmrRanges, dmr=ind, phen.col=colors, CpGs=bsseqEx, genome="mm10")
+dmrOvGenes <- dmrRanges[!is.na(dmrRanges$overlapping.genes)]
+
+library(reshape)
+ind <- order(dmrRanges$min_smoothed_fdr)[1:5]
+methSig <- bsseq::getMeth(bsseqEx, regions=dmrRanges[ind], what="perRegion", type="raw")
+methSig <- as.data.frame(methSig)
+methSig$dmr <- 1:5
+methSigLong <- data.table::melt(methSig, id.vars=c("dmr"))
+colnames(methSigLong) <- c("dmr", "sample", "mC_fraction")
+ggplot(methSigLong, aes(x=sample, y=dmr, fill=mC_fraction))+geom_tile()+scale_fill_viridis_c()+theme_bw()
 ```
 
 
