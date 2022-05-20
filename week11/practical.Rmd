@@ -45,15 +45,22 @@ seqlevelsStyle(peaks) <- "ensembl"
 We'll need this function:
 
 ```{r}
-gi2targets <- function(gi, ensdb){
+gi2targets <- function(gi, proms){
   stopifnot(is(gi, "GInteractions"))
-  stopifnot(is(ensdb, "EnsDb"))
+  if(is(proms, "GRanges")){
+    stopifnot(!is.null(proms$gene_name))
+    seqlevelsStyle(proms) <- "ensembl"
+    proms <- proms[proms$gene_name!=""]
+  }else if(is(proms, "EnsDb")){
+    # obtain the promoters
+    proms <- trim(suppressWarnings(promoters(
+      transcripts(ensdb, columns=c("gene_name")),
+      upstream=100,downstream=50)))
+    proms <- proms[proms$gene_name!=""]
+  }else{
+    stop("Unrecognized `proms` format")
+  }
   seqlevelsStyle(gi) <- "ensembl"
-  # obtain the promoters
-  proms <- trim(suppressWarnings(promoters(
-    transcripts(ensdb, columns=c("gene_name")),
-    upstream=100,downstream=50)))
-  proms <- proms[proms$gene_name!=""]
   # find overlaps between first anchor and promoters
   o <- as.data.frame(findOverlaps(first(gi), proms))
   o$gene <- proms$gene_name[o$subjectHits]
@@ -72,17 +79,25 @@ gi2targets <- function(gi, ensdb){
 }
 ```
 
-We first obtain the gene annotation:
+We first obtain the gene annotation (takes a long time if you don't already have the annotation):
 
-```{r}
+```{r, eval=FALSE}
 ah <- AnnotationHub()
 ensdb <- ah[["AH95744"]] # human ensembl 104 annotation
 ```
 
+As a shortcut, if you don't want to wait for the annotation to download, you can download and use these promoters:
+
+```{r}
+download.file("https://ethz-ins.org/content/w11_promoters.rds", "promoters.rds")
+proms <- readRDS("promoters.rds")
+```
+
+
 We then use the function to link distal regions to the gene(s) whose TSS they are in contact with:
 
 ```{r}
-gi2 <- gi2targets(gi,ensdb)
+gi2 <- gi2targets(gi,ensdb)  # or gi2 <- gi2targets(gi,proms)
 gi2
 ```
 
