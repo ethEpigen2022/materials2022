@@ -1,0 +1,127 @@
+---
+title: "Solution to the assignment on using long-range interactions"
+author: "Pierre-Luc"
+date: "5/20/2022"
+output: html_document
+---
+
+# Preparation
+
+```{r}
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(AnnotationHub)
+  library(ensembldb)
+  library(InteractionSet)
+})
+```
+
+## Obtain the data
+
+```{r}
+# p300 peaks in A549 cells:
+download.file("https://www.encodeproject.org/files/ENCFF776TFX/@@download/ENCFF776TFX.bed.gz", "p300.narrowPeak.gz")
+# Hi-C long-range interactions in A549 cells:
+download.file("https://www.encodeproject.org/files/ENCFF803ZOW/@@download/ENCFF803ZOW.tsv", "interactions.tsv")
+```
+
+Load the interaction data, and form an GInteractions object:
+
+```{r}
+hic <- read.delim("interactions.tsv")
+head(hic)
+anchor1 <- GRanges(hic$chr1, IRanges(hic$x1, hic$x2))
+anchor2 <- GRanges(hic$chr2, IRanges(hic$y1, hic$y2))
+gi <- GInteractions(anchor1, anchor2, observed=hic$observed)
+seqlevelsStyle(gi) <- "ensembl"
+gi
+```
+
+Load the peaks:
+
+```{r}
+peaks <- rtracklayer::import("p300.narrowPeak.gz")
+seqlevelsStyle(peaks) <- "ensembl"
+```
+
+## Link genomic interactions to TSS
+
+We'll need this function:
+
+```{r}
+gi2targets <- function(gi, proms){
+  stopifnot(is(gi, "GInteractions"))
+  if(is(proms, "GRanges")){
+    stopifnot(!is.null(proms$gene_name))
+    seqlevelsStyle(proms) <- "ensembl"
+    proms <- proms[proms$gene_name!=""]
+  }else if(is(proms, "EnsDb")){
+    # obtain the promoters
+    proms <- trim(suppressWarnings(promoters(
+      transcripts(ensdb, columns=c("gene_name")),
+      upstream=100,downstream=50)))
+    proms <- proms[proms$gene_name!=""]
+  }else{
+    stop("Unrecognized `proms` format")
+  }
+  seqlevelsStyle(gi) <- "ensembl"
+  # find overlaps between first anchor and promoters
+  o <- as.data.frame(findOverlaps(first(gi), proms))
+  o$gene <- proms$gene_name[o$subjectHits]
+  o <- o[!duplicated(o[,c(1,3)]),]
+  o1 <- splitAsList(o$gene, o$queryHits)
+  # find overlaps between second anchor and promoters
+  o <- as.data.frame(findOverlaps(second(gi), proms))
+  o$gene <- proms$gene_name[o$subjectHits]
+  o <- o[!duplicated(o[,c(1,3)]),]
+  o2 <- splitAsList(o$gene, o$queryHits)
+  # merge anchors with an overlap in the mate anchor
+  hic2 <- c( first(gi)[as.numeric(names(o2))], second(gi)[as.numeric(names(o1))] )
+  # add target gene
+  hic2$gene <- c(o2,o1)
+  sort(hic2)
+}
+```
+
+We first obtain the gene annotation (takes a long time if you don't already have the annotation):
+
+```{r, eval=FALSE}
+ah <- AnnotationHub()
+ensdb <- ah[["AH95744"]] # human ensembl 104 annotation
+```
+We then use the function to link distal regions to the gene(s) whose TSS they are in contact with:
+
+```{r}
+gi2 <- gi2targets(gi, ensdb)
+
+```
+
+# Solution to the assignment
+
+What proportions of the interactions are with the nearest gene, for peaks at different distances from a TSS?
+
+```{r, fig.height=3.5, fig.width=5.6}
+# get the nearest genes
+peaks <- epiwraps::annotateRegions(peaks, ensdb)
+# add targets from long-range interactions
+mcols(peaks)[from(o),"target"] <- gi2[to(o)]$gene
+mcols(peaks)$target <- CharacterList(mcols(peaks)$target)
+# get rid of peaks that don't have any interaction (or are ridiculously far from any TSS)
+p2 <- peaks[!any(is.na(peaks$target)) & peaks$nearestTSS.gene_name!="",]
+# find whether the long-range and distance-based genes differ
+# (the `any` is used because p2$target is a CharacterList, which may contain 
+#  more than one gene, and we're happy if any of those match)
+p2$match <- any(p2$target==p2$nearestTSS.gene_name)
+# we break into different groups based on distance (here in a signed fashion)
+p2$cut <- cut(p2$distance2nearestTSS, breaks=c(-Inf,-10000,-2500,0,2500,10000,Inf))
+ll <- split(p2$match, p2$cut)
+# we calculate the proportion for each group
+x <- sapply(ll, FUN=function(x) sum(x)/length(x))
+x <- rev(x)
+# rename the groups
+names(x) <- c(">10kb upstream", "2.5-10kb upstream","<2.5kb upstream", "<2.5kb downstream", "2.5-10kb downstream", ">10kb downstream")
+ggplot(data.frame(d=factor(names(x),names(x)), prop=x), aes(prop,d)) + geom_col() +
+  labs(x="Proportion of the interactions that are with the nearest gene",
+       y="Positive relative to the nearest gene")
+x
+```
